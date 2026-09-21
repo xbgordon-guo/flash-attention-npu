@@ -64,7 +64,7 @@ def check_required_parameters(sig, kwargs, ignored=()):
         pytest.fail(f"unsupported required parameters in current API: {missing}; signature={sig}")
 
 
-def metadata_kwargs(api, causal, window_size):
+def metadata_kwargs(api, causal, window_size, headdim_v=None):
     sig = inspect.signature(api.get_scheduler_metadata)
 
     candidates = {
@@ -74,7 +74,7 @@ def metadata_kwargs(api, causal, window_size):
         "num_heads_q": 6,
         "num_heads_kv": 6,
         "headdim": 32,
-        "headdim_v": 32,
+        "headdim_v": 32 if headdim_v is None else headdim_v,
         "qkv_dtype": torch.float16,
         "cu_seqlens_q": None,
         "cu_seqlens_k": None,
@@ -113,6 +113,7 @@ def run_metadata_compile_test(
     api,
     expected_sizes=None,
     tiling_only_metadata=False,
+    headdim_v=None,
 ):
     cache_seqlens = torch.tensor(
         [16, 16],
@@ -135,6 +136,7 @@ def run_metadata_compile_test(
             api,
             causal=causal,
             window_size=window_size,
+            headdim_v=headdim_v,
         )
 
         def fn(cache):

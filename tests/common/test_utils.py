@@ -176,7 +176,7 @@ def make_block_table(batch_size, kv_seqlen, block_size):
 
 
 def make_paged_kv_cache(batch_size, kv_seqlen, block_size, kv_heads, head_size, data_type,
-                        *, device="npu", requires_grad=False, generator=None):
+                        *, device="npu", requires_grad=False, generator=None, head_size_v=None):
     """Allocate paged K/V caches matching ``make_block_table``'s block count.
 
     ``make_block_table`` assigns ``ceil(kv_seqlen/block_size)`` physical blocks
@@ -186,10 +186,14 @@ def make_paged_kv_cache(batch_size, kv_seqlen, block_size, kv_heads, head_size, 
     nonexistent blocks, causing a kernel-side DDR overrun (AICore exception
     0x800000) and cascading failures in later cases.
     """
+    if head_size_v is None:
+        head_size_v = head_size
+    if head_size_v is None:
+        head_size_v = head_size
     num_blocks = batch_size * ((kv_seqlen + block_size - 1) // block_size)
     key_cache = make_random_tensor((num_blocks, block_size, kv_heads, head_size), data_type,
                                    generator=generator, device=device, requires_grad=requires_grad)
-    value_cache = make_random_tensor((num_blocks, block_size, kv_heads, head_size), data_type,
+    value_cache = make_random_tensor((num_blocks, block_size, kv_heads, head_size_v), data_type,
                                      generator=generator, device=device, requires_grad=requires_grad)
     return key_cache, value_cache
 

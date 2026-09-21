@@ -257,7 +257,7 @@ def golden_bsnd_bwd_from_fwd(
         dx_bn, q_bn, k_new, v_new, softmax_res, drop_mask, scale, softcap, dropout_p
     )
     dk_bn = sum_gqa_grad(dk_bn, nheads, nheads_k, batch, seq_k, headdim)
-    dv_bn = sum_gqa_grad(dv_bn, nheads, nheads_k, batch, seq_k, headdim)
+    dv_bn = sum_gqa_grad(dv_bn, nheads, nheads_k, batch, seq_k, v.shape[-1])
 
     dq = dq_bn.permute(0, 2, 1, 3).to(compute_dtype)
     dk = dk_bn.permute(0, 2, 1, 3).to(compute_dtype)
@@ -295,6 +295,7 @@ def golden_tnd_bwd_from_fwd(
         cu_q.append(cu_q[-1] + int(sq))
         cu_k.append(cu_k[-1] + int(sk))
     headdim = q.shape[-1]
+    headdim_v = v.shape[-1]
     compute_dtype = q.dtype
     lse_nt = softmax_lse.detach().cpu().to(torch.float32)
     if lse_nt.dim() != 2:
@@ -338,7 +339,7 @@ def golden_tnd_bwd_from_fwd(
             dxi, qi, ki_new, vi_new, softmax_res_i, drop_mask, scale, softcap, dropout_p
         )
         dki = sum_gqa_grad(dki, nheads, nheads_k, 1, sk, headdim)
-        dvi = sum_gqa_grad(dvi, nheads, nheads_k, 1, sk, headdim)
+        dvi = sum_gqa_grad(dvi, nheads, nheads_k, 1, sk, headdim_v)
 
         dq_golden[cu_q[i] : cu_q[i + 1]] = (
             dqi.permute(0, 2, 1, 3).reshape(sq, nheads, headdim).to(compute_dtype)
@@ -347,7 +348,7 @@ def golden_tnd_bwd_from_fwd(
             dki.permute(0, 2, 1, 3).reshape(sk, nheads_k, headdim).to(k.dtype)
         )
         dv_golden[cu_k[i] : cu_k[i + 1]] = (
-            dvi.permute(0, 2, 1, 3).reshape(sk, nheads_k, headdim).to(v.dtype)
+            dvi.permute(0, 2, 1, 3).reshape(sk, nheads_k, headdim_v).to(v.dtype)
         )
 
     return dq_golden, dk_golden, dv_golden

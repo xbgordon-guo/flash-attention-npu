@@ -60,7 +60,7 @@ public:
         nheads_k = tilingData->kvHeadNum;
         g = tilingData->g;
         nheads = nheads_k * g;
-        headdim = tilingData->qkHeadDim;
+        headdim = tilingData->vHeadDim;
         uint32_t coreNum = tilingData->coreNum;
         dAlign = (headdim + 15) / 16 * 16;
         cu_seq_qlen_addr = cu_seq_qlen;

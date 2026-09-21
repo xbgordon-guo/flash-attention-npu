@@ -27,6 +27,25 @@ def test_fa4_910_scheduler_metadata_torch_compile_correctness():
     )
 
 
+def test_fa4_910_scheduler_metadata_headdim_v_torch_compile_correctness():
+    """Metadata compile case with headdim_v != headdim (qk/v split head dims)."""
+    require_soc("910")
+
+    api = load_api("flash_attn_npu_4.flash_attn_npu_interface")
+
+    run_metadata_compile_test(
+        api,
+        expected_sizes={
+            "NO_MASK": 2376,
+            "CAUSAL": 4196680,
+            "LOCAL_LEFT": 4196680,
+            "LOCAL_RIGHT": 4196680,
+            "FULL_WINDOW_COLLAPSE": 2376,
+        },
+        headdim_v=128,
+    )
+
+
 def test_fa4_910_varlen_torch_compile_correctness():
     require_soc("910")
 

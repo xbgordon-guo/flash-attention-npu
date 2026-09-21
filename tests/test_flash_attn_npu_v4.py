@@ -382,13 +382,15 @@ test_cases = [
     (torch.bfloat16, 1, 15, 1, 15, 3, 192, 1, 128, False, "TND", False, 0, 1, 0),
 ]
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, is_varied, window_size_left, window_size_right, num_splits", test_cases)
-def test_fa_kvcache_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, is_varied, window_size_left, window_size_right, num_splits):
+def test_fa_kvcache_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, is_varied, window_size_left, window_size_right, num_splits, head_size_v=None):
     # num_splits>1 (active KV split) is currently only wired for paged KV + varlen-q (TND).
     name = torch_npu.npu.get_device_name() if torch_npu.npu.device_count() > 0 else ""
     if num_splits > 1 and not (cache_mode == 1 and layout == "TND"):
         pytest.skip("num_splits>1 requires paged KV cache and TND (varlen-q) layout")
     if not (1 <= head_size <= 256):
         pytest.skip("head_size must be in [1, 256]")
+    if head_size_v is None:
+        head_size_v = head_size
 
     if is_varied and layout != "TND":
         pytest.skip("is_varied requires TND (varlen-q) layout")
@@ -399,7 +401,6 @@ def test_fa_kvcache_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv
         q_sequences = [q_seqlen] * batch_size
         kv_sequences = [kv_seqlen] * batch_size
     t_q_sum = sum(q_sequences)
-    t_kv_sum = sum(kv_sequences)
     if layout == "BSND":
         query = make_random_tensor((batch_size, q_seqlen, num_heads, head_size), data_type,
                                    device="npu", requires_grad=True)
@@ -415,26 +416,24 @@ def test_fa_kvcache_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv
         # trigger an AICore DDR overrun.
         key_cache, value_cache = make_paged_kv_cache(
             batch_size, kv_seqlen, block_size, kv_heads, head_size, data_type,
-            device="npu", requires_grad=True
+            device="npu", requires_grad=True, head_size_v=head_size_v
         )
         block_tables = make_block_table(batch_size, kv_seqlen, block_size).npu()
     else:
         if layout == "BSND":
             key_cache = make_random_tensor((batch_size, kv_seqlen, kv_heads, head_size), data_type,
                                            device="npu", requires_grad=True)
-            value_cache = make_random_tensor((batch_size, kv_seqlen, kv_heads, head_size), data_type,
-                                             device="npu", requires_grad=True)
+            value_cache = make_random_tensor((batch_size, kv_seqlen, kv_heads, head_size_v), data_type,
+                                              device="npu", requires_grad=True)
         else:
             key_cache = make_packed_random_tensor(kv_sequences, kv_seqlen, kv_heads, head_size, data_type,
                                                   device="npu", requires_grad=True)
-            value_cache = make_packed_random_tensor(kv_sequences, kv_seqlen, kv_heads, head_size, data_type,
-                                                    device="npu", requires_grad=True)
+            value_cache = make_packed_random_tensor(kv_sequences, kv_seqlen, kv_heads, head_size_v, data_type,
+                                                     device="npu", requires_grad=True)
         block_tables = None
     if layout == "BSND":
-        q_seqlen_list = [q_seqlen] * batch_size
         kv_seqlen_list = [kv_seqlen] * batch_size
     else:
-        q_seqlen_list = q_sequences
         kv_seqlen_list = kv_sequences
     scale = 1.0 / (head_size ** 0.5)
     kv_seqlen_list = torch.tensor(kv_seqlen_list, dtype=torch.int32).npu()
@@ -513,11 +512,9 @@ def test_fa_kvcache_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv
     if layout == "BSND":
         golden_lseL_gpu_ref = torch.empty((batch_size, num_heads, q_seqlen), dtype=torch.float32)
         golden_lseL_gpu_pt = torch.empty_like(golden_lseL_gpu_ref)
-        golden_lseL = torch.empty((batch_size, num_heads, q_seqlen), dtype=torch.float32)
     else:
         golden_lseL_gpu_ref = torch.empty((num_heads, t_q_sum), dtype=torch.float32)
         golden_lseL_gpu_pt = torch.empty_like(golden_lseL_gpu_ref)
-        golden_lseL = torch.empty((num_heads, t_q_sum), dtype=torch.float32)
     if layout == "BSND":
         atten_mask = None
         if is_causal_golden:
@@ -858,5 +855,42 @@ hd_cases = [
 @pytest.mark.parametrize("data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, num_splits, window_size_left, window_size_right, softcap", hd_cases)
 def test_fa_kvcache_ops_with_hd_le_256(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, num_splits, window_size_left, window_size_right, softcap):
     is_varied = layout == 'TND'
-    name = torch_npu.npu.get_device_name() if torch_npu.npu.device_count() > 0 else ""
     test_fa_kvcache_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode, block_size, is_causal, layout, is_varied, window_size_left, window_size_right, num_splits)
+
+
+# qk/v head_dim separation cases (MLA non-absorbed shapes): q/k use head_size,
+# v uses head_size_v. Full dtype/layout/causal/paged matrix plus FD split-KV
+# decode coverage. The 910 kernel change lands together with these cases.
+head_size_v_cases = [
+    (dtype, 2, 6, 6, 128, 1024, dqk, dv, cache_mode, 128, causal, layout, is_varied, -1, -1, num_splits)
+    for dqk, dv in ((192, 128), (128, 64), (64, 128))
+    for dtype in (torch.float16, torch.bfloat16)
+    for layout, cache_mode, is_varied, num_splits in (
+        ("BSND", 0, False, 0),
+        ("BSND", 1, False, 0),
+        ("TND", 0, True, 0),
+        ("TND", 1, True, 1),
+    )
+    for causal in (False, True)
+] + [
+    # FD split-KV decode: paged TND, small q, long kv, num_splits>1.
+    (dtype, 1, 6, 1, 4, 8192, dqk, dv, 1, 128, causal, "TND", False, -1, -1, 2)
+    for dqk, dv in ((192, 128), (128, 64), (64, 128))
+    for dtype in (torch.float16, torch.bfloat16)
+    for causal in (False, True)
+]
+
+
+@pytest.mark.parametrize(
+    "data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, head_size_v, cache_mode, block_size, is_causal, layout, is_varied, window_size_left, window_size_right, num_splits",
+    head_size_v_cases,
+)
+def test_fa_kvcache_ops_headdim_v(
+    data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, head_size_v,
+    cache_mode, block_size, is_causal, layout, is_varied, window_size_left, window_size_right, num_splits,
+):
+    test_fa_kvcache_ops(
+        data_type, batch_size, num_heads, kv_heads, q_seqlen, kv_seqlen, head_size, cache_mode,
+        block_size, is_causal, layout, is_varied, window_size_left, window_size_right, num_splits,
+        head_size_v=head_size_v,
+    )

@@ -630,7 +630,7 @@ namespace SplitFuse {
             if (kvStart >= kvEnd) {
 #ifdef __DAV_C220_VEC__
                 if (!isSplitKV) {
-                    LayoutO layoutOInit(qSeqlen, embed * qHeads);
+                    LayoutO layoutOInit(qSeqlen, embedV * qHeads);
                     LayoutLse layoutLseInit(qHeads, lseHeadStride);
                     EpilogueInitOut epilogueInitOut(resource);
                     epilogueInitOut(gO[gmOffsetO], gLse[gmOffsetLse], layoutOInit, layoutLseInit, qSBlockSize, qNBlockSize);
@@ -928,8 +928,8 @@ namespace SplitFuse {
                     Arch::CrossCoreSetFlag<0x2, PIPE_FIX>(pvReady);
 #endif
 #ifdef __DAV_C220_VEC__
-                    LayoutO layoutO(qSeqlen, embed * qHeads);
-                    LayoutUpdate layoutUpdate(rowNum, embed, embedRound);
+                    LayoutO layoutO(qSeqlen, embedV * qHeads);
+                    LayoutUpdate layoutUpdate(rowNum, embedV, embedRoundV);
                     LayoutLse layoutLse(qHeads,
                         (INPUT_LAYOUT == FaiKenel::inputLayout::TND) ? totalQTokens : maxQSeqlen);
                     uint64_t gmOffsetUpdate = (uint64_t)(coreIdx * WORKSPACE_BLOCK_SIZE_DB);
@@ -937,7 +937,7 @@ namespace SplitFuse {
 
                     if (flashDecodeFlag != 0U) {
                         LayoutLse layoutgmLse(qSBlockSize, qNBlockSize);
-                        LayoutLse layoutgmLo(qSBlockSize, embed * qNBlockSize);
+                        LayoutLse layoutgmLo(qSBlockSize, embedV * qNBlockSize);
                         typename EpilogueRescaleO::SplitKVParams splitParams;
                         splitParams.isSplitkv = isSplitKV;
                         splitParams.gCombineLse = gLseFD[gmOffsetLseFD];

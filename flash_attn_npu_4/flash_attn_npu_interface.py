@@ -42,8 +42,11 @@ def round_multiple(x, m):
 _HEADDIM_BWD_ALIGN = 64
 
 
-def _pad_bwd_headdim(dout, q, k, v, out, head_size_og):
+def _pad_bwd_headdim(dout, q, k, v, out, head_size_og, head_size_v_og):
     """Pad headdim to a multiple of 64 for the FAG bwd kernel.
+
+    q/k (and dq/dk) use head_size_og (d_qk); v/out/dout (and dv) use
+    head_size_v_og (d_v).
     """
     q_dtype = q.dtype
     if q_dtype not in (torch.float16, torch.bfloat16):
@@ -54,25 +57,33 @@ def _pad_bwd_headdim(dout, q, k, v, out, head_size_og):
                 f"mha_bwd: q/k/v/out/dout must have the same dtype, "
                 f"got q={q_dtype}, {name}={t.dtype}"
             )
-    if dout.size(-1) != head_size_og:
+    if dout.size(-1) != head_size_v_og:
         raise ValueError(
-            f"dout headdim ({dout.size(-1)}) must equal original q/k/v "
-            f"headdim ({head_size_og})"
+            f"dout headdim ({dout.size(-1)}) must equal original v "
+            f"headdim ({head_size_v_og})"
         )
-    qkv_out_headdims = [t.size(-1) for t in (q, k, v, out)]
-    if len(set(qkv_out_headdims)) != 1:
+    qk_headdims = [t.size(-1) for t in (q, k)]
+    if len(set(qk_headdims)) != 1:
         raise ValueError(
-            f"q/k/v/out must share the same headdim, got {qkv_out_headdims} "
-            "(unequal headdim is not supported)"
+            f"q/k must share the same headdim, got {qk_headdims}"
         )
-    ctx_headdim = qkv_out_headdims[0]
+    v_headdims = [t.size(-1) for t in (v, out)]
+    if len(set(v_headdims)) != 1:
+        raise ValueError(
+            f"v/out must share the same headdim, got {v_headdims}"
+        )
+    ctx_headdim = qk_headdims[0]
     if ctx_headdim <= 0 or ctx_headdim > 256:
         raise ValueError(
-            f"headdim must be in (0, 256], got {ctx_headdim} "
+            f"qk headdim must be in (0, 256], got {ctx_headdim} "
         )
-    target = round_multiple(ctx_headdim, _HEADDIM_BWD_ALIGN)
+    ctx_headdim_v = v_headdims[0]
+    if ctx_headdim_v <= 0 or ctx_headdim_v > 256:
+        raise ValueError(
+            f"v headdim must be in (0, 256], got {ctx_headdim_v} "
+        )
 
-    def _pad(t):
+    def _pad(t, target):
         cur = t.size(-1)
         if cur == target:
             return t
@@ -80,7 +91,17 @@ def _pad_bwd_headdim(dout, q, k, v, out, head_size_og):
             raise ValueError(f"headdim {cur} > pad target {target}")
         return torch.nn.functional.pad(t, [0, target - cur])
 
-    return _pad(dout), _pad(q), _pad(k), _pad(v), _pad(out), head_size_og
+    target_qk = round_multiple(ctx_headdim, _HEADDIM_BWD_ALIGN)
+    target_v = round_multiple(ctx_headdim_v, _HEADDIM_BWD_ALIGN)
+    return (
+        _pad(dout, target_v),
+        _pad(q, target_qk),
+        _pad(k, target_qk),
+        _pad(v, target_v),
+        _pad(out, target_v),
+        head_size_og,
+        head_size_v_og,
+    )
 
 
 def _window_to_npu(window_size: Optional[int]) -> int:
@@ -402,8 +423,8 @@ def _flash_attn_forward_fake(
         )
 
     is_varlen_q = cu_seqlens_q is not None
-    # Real mha_fwd uses empty_like(q) when out_ is absent.
-    out = torch.empty_like(q)
+    # Real mha_fwd allocates out with v's head dimension when out_ is absent.
+    out = torch.empty(q.shape[:-1] + (v.shape[-1],), dtype=q.dtype, device=q.device)
 
     if is_varlen_q:
         # (num_heads, total_q)
@@ -736,6 +757,7 @@ class FlashAttnFunc(torch.autograd.Function):
         ctx.aux_tensors = aux_tensors
         ctx.aux_scalars = aux_scalars
         ctx.head_size_og = q.size(-1)
+        ctx.head_size_v_og = v.size(-1)
         return (out, softmax_lse) if return_lse else out
 
     @staticmethod
@@ -751,8 +773,8 @@ class FlashAttnFunc(torch.autograd.Function):
         if win_r is not None and win_r < 0:
             win_r = None
 
-        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(
-            dout, q, k, v, out, ctx.head_size_og
+        dout, q, k, v, out, head_size_og, head_size_v_og = _pad_bwd_headdim(
+            dout, q, k, v, out, ctx.head_size_og, ctx.head_size_v_og
         )
         dq, dk, dv = _flash_attn_backward(
             q,
@@ -788,7 +810,7 @@ class FlashAttnFunc(torch.autograd.Function):
         )
         dq = dq[..., :head_size_og]
         dk = dk[..., :head_size_og]
-        dv = dv[..., :head_size_og]
+        dv = dv[..., :head_size_v_og]
         return (
             dq,
             dk,
@@ -952,6 +974,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         ctx.aux_tensors = aux_tensors
         ctx.aux_scalars = aux_scalars
         ctx.head_size_og = q.size(-1)
+        ctx.head_size_v_og = v.size(-1)
 
         # Do not materialize unused output gradients as zero tensors.
         # V4 backward does not support dlse; unused LSE gradients
@@ -978,8 +1001,8 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         if win_r is not None and win_r < 0:
             win_r = None
 
-        dout, q, k, v, out, head_size_og = _pad_bwd_headdim(
-            dout, q, k, v, out, ctx.head_size_og
+        dout, q, k, v, out, head_size_og, head_size_v_og = _pad_bwd_headdim(
+            dout, q, k, v, out, ctx.head_size_og, ctx.head_size_v_og
         )
         dq, dk, dv = _flash_attn_backward(
             q,
@@ -1015,7 +1038,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
         )
         dq = dq[..., :head_size_og]
         dk = dk[..., :head_size_og]
-        dv = dv[..., :head_size_og]
+        dv = dv[..., :head_size_v_og]
         return (
             dq,
             dk,

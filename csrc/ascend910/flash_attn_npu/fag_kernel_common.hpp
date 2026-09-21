@@ -107,8 +107,10 @@ struct FAGv2TilingData {
     int64_t g;
     int64_t qSeqlen;
     int64_t qkHeadDim;
+    int64_t vHeadDim;
     int64_t qSize;
     int64_t kvSize;
+    int64_t vSize;
     int64_t dqWorkSpaceOffset;
     int64_t dkWorkSpaceOffset;
     int64_t dvWorkSpaceOffset;

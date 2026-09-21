@@ -236,12 +236,19 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     if (softmax_scale_.has_value()) {
         softmax_scale = softmax_scale_.value();
     }
+    // v's last dim is the head dim in every layout: (b, s, h_k, dv) /
+    // (total_k, h_k, dv) / (num_pages, page_size, h_k, dv).
+    const int head_size_v = static_cast<int>(v.size(-1));
     if (out_.has_value()) {
         out = out_.value();
         TORCH_CHECK(out.dtype() == q_dtype, "output must have the same dtype as inputs");
         TORCH_CHECK(out.stride(-1) == 1, "Output tensor must have contiguous last dimension");
+        TORCH_CHECK(out.size(-1) == head_size_v,
+                    "Output tensor must have the same last dimension as v");
     }  else {
-        out = torch::empty_like(q);
+        auto out_sizes = q.sizes().vec();
+        out_sizes.back() = head_size_v;
+        out = torch::empty(out_sizes, q.options());
     }
     const auto sizes = q.sizes();
 
@@ -267,6 +274,11 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
     TORCH_CHECK(head_size_og >= 1 && head_size_og <= 256, "FlashAttention only supports head dimension in [1, 256]");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
+    TORCH_CHECK(head_size_og == k.size(-1), "query and key must have the same head dimension");
+    TORCH_CHECK(v.sizes().slice(0, v.dim() - 1) == k.sizes().slice(0, k.dim() - 1),
+                "v and k must have the same shape except the last (head) dimension");
+    TORCH_CHECK(head_size_v >= 1 && head_size_v <= 256,
+                "FlashAttention only supports v head dimension in [1, 256]");
 
     // If seqused_k_ was not provided, derive seqlens_k from tensor shapes or cu_seqlens_k
     if (!seqused_k_.has_value()) {
@@ -337,7 +349,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
             int64_t maxKvUpper = static_cast<int64_t>(max_num_blocks_per_seq) * page_block_size;
             int64_t kvSegUpper = maxKvUpper / 512 + 1;
             int64_t lseTasksUpper = static_cast<int64_t>(num_heads) * seqlen_q * kvSegUpper * 2;
-            wsSplit = lseTasksUpper * 4 + lseTasksUpper * head_size_og * 4;
+            wsSplit = lseTasksUpper * 4 + lseTasksUpper * head_size_v * 4;
         }
         workspace_tensor = at::empty({wsBase + wsSplit}, at::device(at::kPrivateUse1).dtype(at::kByte));
         launchBlockDim = blockDim;
@@ -358,7 +370,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         tiling_cpu_ptr->set_numHeads(static_cast<uint32_t>(num_heads));
         tiling_cpu_ptr->set_kvHeads(static_cast<uint32_t>(num_heads_k));
         tiling_cpu_ptr->set_embeddingSize(static_cast<uint32_t>(head_size_og));
-        tiling_cpu_ptr->set_embeddingSizeV(static_cast<uint32_t>(head_size_og));
+        tiling_cpu_ptr->set_embeddingSizeV(static_cast<uint32_t>(head_size_v));
         tiling_cpu_ptr->set_numBlocks(static_cast<uint32_t>(num_blocks));
         tiling_cpu_ptr->set_blockSize(static_cast<uint32_t>(page_block_size));
         tiling_cpu_ptr->set_maxNumBlocksPerBatch(static_cast<uint32_t>(max_num_blocks_per_seq));
@@ -459,7 +471,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         splitCtx.num_heads = num_heads;
         splitCtx.num_heads_k = num_heads_k;
         splitCtx.seqlen_q = seqlen_q;
-        splitCtx.head_size_v = head_size_og;
+        splitCtx.head_size_v = head_size_v;
         splitCtx.cu_seqlen_q_cpu = cu_seqlen_q_cpu;
         splitCtx.seqlens_k_cpu = seqlens_k_cpu;
         splitCtx.is_varlen_q = is_varlen_q;
@@ -788,12 +800,15 @@ mha_bwd(at::Tensor dout,  // (b, s_q, h, dv) or (total_q, h, dv) if there is cu_
     TORCH_CHECK(nheads > 0 && nheads_k > 0, "mha_bwd: number of Q/KV heads must be positive");
     TORCH_CHECK(nheads % nheads_k == 0,
                 "mha_bwd: number of heads in key/value must divide number of heads in query");
-    // NPU FAG bwd currently requires q/k/v/dout headdim to be equal.
-    TORCH_CHECK(q_headdim == k_headdim && q_headdim == v_headdim && q_headdim == dout_headdim,
-                "mha_bwd: q/k/v/dout must share the same headdim (unequal headdim is not supported)");
-    TORCH_CHECK(q_headdim > 0 && q_headdim <= 256, "mha_bwd: headdim must be in (0, 256].");
-    TORCH_CHECK(qsizes == dout_sizes, "mha_bwd: q and dout must have the same shape");
-    TORCH_CHECK(ksizes == vsizes, "mha_bwd: k and v must have the same shape");
+    // FAG bwd supports split headdims: q/k share d_qk; v/dout/out share d_v.
+    TORCH_CHECK(q_headdim == k_headdim, "mha_bwd: q and k must share the same headdim");
+    TORCH_CHECK(q_headdim > 0 && q_headdim <= 256, "mha_bwd: qk headdim must be in (0, 256].");
+    TORCH_CHECK(v_headdim == dout_headdim, "mha_bwd: v and dout must share the same headdim");
+    TORCH_CHECK(v_headdim > 0 && v_headdim <= 256, "mha_bwd: v headdim must be in (0, 256].");
+    TORCH_CHECK(qsizes.slice(0, qsizes.size() - 1) == dout_sizes.slice(0, dout_sizes.size() - 1),
+                "mha_bwd: q and dout must have the same shape except the head dimension");
+    TORCH_CHECK(ksizes.slice(0, ksizes.size() - 1) == vsizes.slice(0, vsizes.size() - 1),
+                "mha_bwd: k and v must have the same shape except the head dimension");
     if (is_varlen_q) {
         TORCH_CHECK(static_cast<uint32_t>(vsizes[1]) == nheads_k, "mha_bwd: v nheads_k must match k");
     } else {
