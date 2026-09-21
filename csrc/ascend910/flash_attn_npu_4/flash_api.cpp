@@ -272,13 +272,13 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     const int page_block_size = !paged_KV ? 128 : k.size(1);
     const int num_heads_k = k.dim() == 3 ? k.size(1) : k.size(2);
     TORCH_CHECK(batch_size > 0, "batch size must be positive");
-    TORCH_CHECK(head_size_og >= 1 && head_size_og <= 256, "FlashAttention only supports head dimension in [1, 256]");
+    TORCH_CHECK(head_size_og >= 1 && head_size_og <= 576, "FlashAttention only supports head dimension in [1, 576]");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
     TORCH_CHECK(head_size_og == k.size(-1), "query and key must have the same head dimension");
     TORCH_CHECK(v.sizes().slice(0, v.dim() - 1) == k.sizes().slice(0, k.dim() - 1),
                 "v and k must have the same shape except the last (head) dimension");
-    TORCH_CHECK(head_size_v >= 1 && head_size_v <= 256,
-                "FlashAttention only supports v head dimension in [1, 256]");
+    TORCH_CHECK(head_size_v >= 1 && head_size_v <= 576,
+                "FlashAttention only supports v head dimension in [1, 576]");
 
     // If seqused_k_ was not provided, derive seqlens_k from tensor shapes or cu_seqlens_k
     if (!seqused_k_.has_value()) {

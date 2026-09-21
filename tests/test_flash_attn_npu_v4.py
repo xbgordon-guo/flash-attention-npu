@@ -878,6 +878,19 @@ head_size_v_cases = [
     for dqk, dv in ((192, 128), (128, 64), (64, 128))
     for dtype in (torch.float16, torch.bfloat16)
     for causal in (False, True)
+] + [
+    # GQA/MQA x head_dim separation: prefill forward + backward (cache_mode=0).
+    (dtype, 2, nh, kvh, 128, 1024, dqk, dv, 0, 128, causal, layout, layout == "TND", -1, -1, 0)
+    for dqk, dv in ((192, 128), (128, 64), (64, 128))
+    for dtype in (torch.float16, torch.bfloat16)
+    for nh, kvh, layout in ((6, 1, "BSND"), (6, 3, "BSND"), (6, 1, "TND"))
+    for causal in (False, True)
+] + [
+    # MQA x head_dim separation: paged TND decode (cache_mode=1).
+    (dtype, 2, 6, 1, 128, 1024, dqk, dv, 1, 128, causal, "TND", True, -1, -1, 0)
+    for dqk, dv in ((192, 128), (128, 64), (64, 128))
+    for dtype in (torch.float16, torch.bfloat16)
+    for causal in (False, True)
 ]
 
 
