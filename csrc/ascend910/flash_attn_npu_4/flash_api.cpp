@@ -308,6 +308,13 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     }
     softmaxlse.fill_(std::numeric_limits<float>::infinity());
 
+    uint32_t kvStackCap = fa_split::MAX_KV_STACK_LEN;
+    {
+        uint32_t vCap = (524288u / 2u) / (static_cast<uint32_t>(head_size_v) * 2u);
+        vCap = vCap / 128u * 128u;
+        if (vCap < 128u) { vCap = 128u; }
+        if (vCap < kvStackCap) { kvStackCap = vCap; }
+    }
     if (scheduler_metadata_.has_value()) {
         auto schedMd = scheduler_metadata_.value();
         TORCH_CHECK(schedMd.dtype() == at::kByte, "scheduler_metadata must be a byte tensor");
@@ -347,7 +354,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         int64_t wsSplit = 0;
         if (paged_KV && is_varlen_q) {
             int64_t maxKvUpper = static_cast<int64_t>(max_num_blocks_per_seq) * page_block_size;
-            int64_t kvSegUpper = maxKvUpper / 512 + 1;
+            int64_t kvSegUpper = maxKvUpper / kvStackCap + 1;
             int64_t lseTasksUpper = static_cast<int64_t>(num_heads) * seqlen_q * kvSegUpper * 2;
             wsSplit = lseTasksUpper * 4 + lseTasksUpper * head_size_v * 4;
         }
@@ -477,6 +484,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         splitCtx.is_varlen_q = is_varlen_q;
         splitCtx.blockDim = blockDim;
         splitCtx.num_splits = static_cast<int32_t>(num_splits);
+        splitCtx.kvStackCap = kvStackCap;
         if (flashDecodeFlag) {
             fa_split::splitBN2S1GS2(tiling_cpu_ptr, splitCtx);
             auto needCoreNum = tiling_cpu_ptr->get_needCoreNum();

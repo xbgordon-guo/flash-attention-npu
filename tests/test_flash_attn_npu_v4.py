@@ -387,8 +387,8 @@ def test_fa_kvcache_ops(data_type, batch_size, num_heads, kv_heads, q_seqlen, kv
     name = torch_npu.npu.get_device_name() if torch_npu.npu.device_count() > 0 else ""
     if num_splits > 1 and not (cache_mode == 1 and layout == "TND"):
         pytest.skip("num_splits>1 requires paged KV cache and TND (varlen-q) layout")
-    if not (1 <= head_size <= 256):
-        pytest.skip("head_size must be in [1, 256]")
+    if not (1 <= head_size <= 576):
+        pytest.skip("head_size must be in [1, 576]")
     if head_size_v is None:
         head_size_v = head_size
 
@@ -891,6 +891,20 @@ head_size_v_cases = [
     for dqk, dv in ((192, 128), (128, 64), (64, 128))
     for dtype in (torch.float16, torch.bfloat16)
     for causal in (False, True)
+] + [
+    # (576, 512) paged-KV: dense-q (BSND) + varlen-q (TND), paged only.
+    (dtype, 2, 6, hk, 128, 1024, 576, 512, 1, 128, causal, layout, layout == "TND", -1, -1, ns)
+    for dtype in (torch.float16, torch.bfloat16)
+    for hk in (6, 3, 1)
+    for layout, ns in (("BSND", 0), ("TND", 0), ("TND", 1))
+    for causal in (False, True)
+] + [
+    # (576, 512) paged TND flash-decode: q_len<=16, kv>=1024, small batch.
+    (dtype, 1, 6, 1, qlen, 4096, 576, 512, 1, 128, causal, "TND", False, -1, -1, ns)
+    for dtype in (torch.float16, torch.bfloat16)
+    for qlen in (1, 4, 16)
+    for causal in (False, True)
+    for ns in (0, 2)
 ]
 
 

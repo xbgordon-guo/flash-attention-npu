@@ -175,6 +175,12 @@ __global__ __aicpu__ uint32_t ComputeFAMetadataV4(void *args)
             ctx.is_varlen_q = metaArgs->isVarlen != 0;
             ctx.blockDim = bd;
             ctx.num_splits = static_cast<int32_t>(metaArgs->numSplits);
+            {
+                uint32_t vCap = (524288u / 2u) / (static_cast<uint32_t>(metaArgs->embeddingSizeV) * 2u);
+                vCap = vCap / 128u * 128u;
+                if (vCap < 128u) { vCap = 128u; }
+                ctx.kvStackCap = vCap < fa_split::MAX_KV_STACK_LEN ? vCap : fa_split::MAX_KV_STACK_LEN;
+            }
             fa_split::splitBN2S1GS2(tilingData, ctx);
             tilingData->workSpaceSize = fa_metadata::WorkSpaceSize(static_cast<uint64_t>(bd))
                 + tilingData->splitLseTotalSize + tilingData->splitOTotalSize;

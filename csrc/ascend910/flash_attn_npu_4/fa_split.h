@@ -63,6 +63,7 @@ struct SplitContext {
     bool is_varlen_q;
     uint32_t blockDim;
     int32_t num_splits;
+    uint32_t kvStackCap = MAX_KV_STACK_LEN;
 };
 
 inline BatchParams getBatchParams(uint32_t bIdx, uint32_t groupSize, const SplitContext& ctx)
@@ -79,7 +80,7 @@ inline BatchParams getBatchParams(uint32_t bIdx, uint32_t groupSize, const Split
     p.curQNBlockNum = p.qNBlockNumPerGroup * ctx.num_heads_k;
     p.curQSBlockTile = GetQSBlockTile(p.kvSeqlen);
     p.curQSBlockNum = (p.qSeqlen + p.curQSBlockTile - 1) / p.curQSBlockTile;
-    p.curKSBlockTile = GetKSBlockTile(p.kvSeqlen);
+    p.curKSBlockTile = ctx.kvStackCap;
     p.curKSBlockNum = (p.kvSeqlen + p.curKSBlockTile - 1) / p.curKSBlockTile;
     return p;
 }

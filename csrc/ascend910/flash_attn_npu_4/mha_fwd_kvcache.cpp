@@ -124,6 +124,13 @@ namespace SplitFuse {
             softcapValue = fATilingData->softcapValue;
             maxQSeqlen = fATilingData->maxQSeqlen;
             flashDecodeFlag = fATilingData->flashDecodeFlag;
+            kvStackCap = MAX_KV_STACK_LEN;
+            {
+                uint32_t vCap = (L1_MAX_SIZE / 2) / (embedV * sizeof(ElementV));
+                vCap = vCap / 128 * 128;
+                if (vCap < 128) { vCap = 128; }
+                if (vCap < kvStackCap) { kvStackCap = vCap; }
+            }
 
             // FD workspace sizing: reserve head of workspace for gLseFD/gOFD.
             uint64_t Lsesize = 0;
@@ -201,7 +208,7 @@ namespace SplitFuse {
 
             uint32_t kDynNum = RoundUp(embed, NUM_128);
             kDynNum = kDynNum < NUM_256 ? NUM_256 : kDynNum;
-            uint32_t maxQKPL1Size = L1_MAX_SIZE - embedV * MAX_KV_STACK_LEN * sizeof(ElementV);
+            uint32_t maxQKPL1Size = L1_MAX_SIZE - embedV * kvStackCap * sizeof(ElementV);
             uint32_t maxQL1Size = Q_TILE_CEIL * kDynNum * sizeof(ElementQ);
             uint32_t maxNDynNum =
                 ((maxQKPL1Size - maxQL1Size) / kDynNum / sizeof(ElementV) / DOUBLE_BUFFER) / NUM_32 * NUM_32;
@@ -210,9 +217,9 @@ namespace SplitFuse {
             nDynNum = L1_MAX_N_NUM % nDynNum != 0 ? RoundDown((nDynNum - 1), NUM_32) : nDynNum;
 
             uint32_t L1_QK_SIZE = BlockMmadQK::L1TileShape::M * kDynNum * sizeof(ElementQ);
-            blockMmadQK.init(resource, nDynNum, kDynNum, MAX_KV_STACK_LEN);
+            blockMmadQK.init(resource, nDynNum, kDynNum, kvStackCap);
             uint32_t kPVDynNum = nDynNum * kDynNum / BlockMmadPV::L1TileShape::M;
-            blockMmadPV.init(resource, nDynNum, kPVDynNum, MAX_KV_STACK_LEN, L1_QK_SIZE);
+            blockMmadPV.init(resource, nDynNum, kPVDynNum, kvStackCap, L1_QK_SIZE);
 #endif
 #ifdef __DAV_C220_VEC__
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0);
@@ -283,7 +290,7 @@ namespace SplitFuse {
                     uint32_t curQNBlockNumTmp = qNBlockNumPerGroupTmp * kvHeads;
                     uint32_t curQSBlockTileTmp = GetQSBlockTile(kvSeqlenCur);
                     uint32_t curQSBlockNumTmp = CeilDiv(qSeqlenCur, curQSBlockTileTmp);
-                    uint32_t curKSBlockNumTmp = CeilDiv(kvSeqlenCur, MAX_KV_STACK_LEN);
+                    uint32_t curKSBlockNumTmp = CeilDiv(kvSeqlenCur, kvStackCap);
 
                     int32_t stN1IdxNow = (BIdx == startBIdx) ? (int32_t)startN1Idx : 0;
                     int32_t enN1IdxNow = (BIdx == endBIdx) ? (int32_t)endN1Idx : (int32_t)curQNBlockNumTmp - 1;
@@ -521,7 +528,7 @@ namespace SplitFuse {
             uint32_t qNBlockNumPerGroup = CeilDiv(groupSize, curQNBlockTile);
             uint32_t curQSBlockTile = GetQSBlockTile(kvSeqlen);
             uint32_t curQSBlockNum = CeilDiv(qSeqlen, curQSBlockTile);
-            uint32_t curKSBlockNum = CeilDiv(kvSeqlen, MAX_KV_STACK_LEN);
+            uint32_t curKSBlockNum = CeilDiv(kvSeqlen, kvStackCap);
 
             uint32_t qNBlockIdxCurGroup = qNBlockIdx % qNBlockNumPerGroup;
             uint32_t kvNIdx = qNBlockIdx / qNBlockNumPerGroup;
@@ -564,18 +571,18 @@ namespace SplitFuse {
                     static_cast<int64_t>((qSBlockIdx + 1U) * curQSBlockTile) + diffS;
                 causalKvEnd = causalKvEnd < 0 ? 0 : causalKvEnd;
                 noSkipKvS = AscendC::Std::min(causalKvEnd, static_cast<int64_t>(kvSeqlen));
-                kvSLoopNumTotal = CeilDiv(noSkipKvS, MAX_KV_STACK_LEN);
+                kvSLoopNumTotal = CeilDiv(noSkipKvS, kvStackCap);
                 delEndRow = qSeqlen > kvSeqlen ? static_cast<int32_t>(qSeqlen - kvSeqlen) : delEndRow;
             } else if (maskType == 2U) {
                 int32_t leftPointwindowSizeLeft = kvSeqlen;
                 int32_t leftPointwindowSizeRight = 0;
                 if (windowSizeLeft < 0 && windowSizeLeft * (-1) >= qSeqlen) {
-                    kvStart = kvSeqlen / MAX_KV_STACK_LEN + 1;
+                    kvStart = kvSeqlen / kvStackCap + 1;
                 } else if (windowSizeLeft != WINDOW_SIZE_INT_MAX) {
                     leftPointwindowSizeLeft = kvSeqlen - qSeqlen - windowSizeLeft;
                     windowSizeLeftStartLen = qSBlockIdx * curQSBlockTile + leftPointwindowSizeLeft;
                     windowSizeLeftEndLen = qSBlockIdx * curQSBlockTile + qSBlockSize + leftPointwindowSizeLeft;
-                    kvStart = AscendC::Std::max(static_cast<int32_t>(0), windowSizeLeftStartLen) / static_cast<int32_t>(MAX_KV_STACK_LEN);
+                    kvStart = AscendC::Std::max(static_cast<int32_t>(0), windowSizeLeftStartLen) / static_cast<int32_t>(kvStackCap);
                     notPreMask = false;
                 } else {
                     kvStart = 0;
@@ -591,13 +598,13 @@ namespace SplitFuse {
                         kvSLoopNumTotal = 0;
                     } else {
                         noSkipKvS = AscendC::Std::min(static_cast<int32_t>(kvSeqlen),
-                            RoundUp(windowSizeRightEndLen, static_cast<int32_t>(MAX_KV_STACK_LEN)));
-                        kvSLoopNumTotal = CeilDiv(noSkipKvS, MAX_KV_STACK_LEN);
+                            RoundUp(windowSizeRightEndLen, static_cast<int32_t>(kvStackCap)));
+                        kvSLoopNumTotal = CeilDiv(noSkipKvS, kvStackCap);
                         notNextMask = false;
                     }
                 } else {
                     noSkipKvS = kvSeqlen;
-                    kvSLoopNumTotal = CeilDiv(noSkipKvS, MAX_KV_STACK_LEN);
+                    kvSLoopNumTotal = CeilDiv(noSkipKvS, kvStackCap);
                 }
                 if (windowSizeLeftEndLen > static_cast<int32_t>(kvSeqlen) && windowSizeLeft != WINDOW_SIZE_INT_MAX) {
                     delStartRow = kvSeqlen - leftPointwindowSizeLeft;
@@ -605,7 +612,7 @@ namespace SplitFuse {
                     delEndRow = -leftPointwindowSizeRight;
                 }
             } else {
-                kvSLoopNumTotal = CeilDiv(kvSeqlen, MAX_KV_STACK_LEN);
+                kvSLoopNumTotal = CeilDiv(kvSeqlen, kvStackCap);
             }
 
             // Match FA GPU split-KV: n_block_min/max = split ∩ window (do not overwrite SWA).
@@ -622,8 +629,8 @@ namespace SplitFuse {
 
             int32_t stackSeqCount = 0;
             uint32_t preKVNum = PRE_LAUNCH;
-            uint32_t blockStackNum = (MAX_KV_STACK_LEN - 1 + pagedBlockSize) / pagedBlockSize;
-            uint32_t stackSeqTile = MAX_KV_STACK_LEN;
+            uint32_t blockStackNum = (kvStackCap - 1 + pagedBlockSize) / pagedBlockSize;
+            uint32_t stackSeqTile = kvStackCap;
             uint32_t stackSeqTilePad = MAX_KV_STACK_LEN;
 
             // Empty after split\cap window (GPU early exit). Split partials host-inited to 0/-inf.
@@ -649,9 +656,9 @@ namespace SplitFuse {
             for (uint32_t kvSIdx = kvStart; kvSIdx < kvEnd + preKVNum; kvSIdx++) {
                 if (kvSIdx < kvEnd) {
                     if (kvSIdx + 1 > kvSLoopNumTotal - 1U) {
-                        stackSeqTile = noSkipKvS - kvSIdx * MAX_KV_STACK_LEN;
+                        stackSeqTile = noSkipKvS - kvSIdx * kvStackCap;
                     } else {
-                        stackSeqTile = MAX_KV_STACK_LEN;
+                        stackSeqTile = kvStackCap;
                     }
                     uint32_t curStackTileMod = stackSeqCount % (PRE_LAUNCH + 1U);
                     uint64_t gmOffsetS =
@@ -695,7 +702,7 @@ namespace SplitFuse {
                     LayoutP layOutP(rowNum, stackSeqTile, stackSeqTilePad);
                     LayoutMask layOutMask(COMP_TRIU_MASK_DIM_LEN, COMP_TRIU_MASK_DIM_LEN);
                     uint64_t gmOffsetP = gmOffsetS;
-                    uint32_t kvSStartIdx = kvSIdx * MAX_KV_STACK_LEN;
+                    uint32_t kvSStartIdx = kvSIdx * kvStackCap;
                     uint32_t kvSEndIdx = kvSStartIdx + stackSeqTile;
                     if constexpr (MASK_TYPE == FaiKenel::MaskType::MASK_CAUSAL) {
                         int64_t triUp =
@@ -747,7 +754,7 @@ namespace SplitFuse {
                             if (triUp + 1U == kvSeqlen) {
                                 lastNoMaskTile = kvSLoopNumTotal - 1U;
                             } else {
-                                lastNoMaskTile = (triUp + 1U) / MAX_KV_STACK_LEN - 1U;
+                                lastNoMaskTile = (triUp + 1U) / kvStackCap - 1U;
                             }
                             Arch::CrossCoreWaitFlag(qkReady);
                             int32_t lastNoMaskStackId;
@@ -821,8 +828,8 @@ namespace SplitFuse {
                         } else {
                             bool isLastNoMaskStackTile = (windowSizeRightStartLen >= kvSeqlen) || (windowSizeRightStartLen < 0);
                             uint32_t kvSeqlenLimit = isLastNoMaskStackTile ? kvSeqlen : windowSizeRightStartLen;
-                            uint32_t alignedKvSeqlenLimit = isLastNoMaskStackTile ? RoundUp(kvSeqlenLimit, MAX_KV_STACK_LEN) : RoundDown(kvSeqlenLimit, MAX_KV_STACK_LEN);
-                            uint32_t noMaskStackSeqNum = (alignedKvSeqlenLimit - kvStart * MAX_KV_STACK_LEN) / MAX_KV_STACK_LEN;
+                            uint32_t alignedKvSeqlenLimit = isLastNoMaskStackTile ? RoundUp(kvSeqlenLimit, kvStackCap) : RoundDown(kvSeqlenLimit, kvStackCap);
+                            uint32_t noMaskStackSeqNum = (alignedKvSeqlenLimit - kvStart * kvStackCap) / kvStackCap;
                             Arch::CrossCoreWaitFlag(qkReady);
                             epilogueOnlineSoftmax(
                                 gP[gmOffsetP],
@@ -876,9 +883,9 @@ namespace SplitFuse {
                 if (kvSIdx >= kvStart + preKVNum) {
                     uint32_t nowkvSIdx = kvSIdx - preKVNum;
                     if (nowkvSIdx + 1 > kvSLoopNumTotal - 1U) {
-                        stackSeqTile = noSkipKvS - nowkvSIdx * MAX_KV_STACK_LEN;
+                        stackSeqTile = noSkipKvS - nowkvSIdx * kvStackCap;
                     } else {
-                        stackSeqTile = MAX_KV_STACK_LEN;
+                        stackSeqTile = kvStackCap;
                     }
                     uint32_t curStackTileMod = (stackSeqCount - PRE_LAUNCH) % (PRE_LAUNCH + 1U);
                     uint64_t gmOffsetOTmp =
@@ -1012,6 +1019,7 @@ namespace SplitFuse {
         uint32_t totalQTokens;
         uint32_t maxQSeqlen;
         uint32_t flashDecodeFlag;
+        uint32_t kvStackCap;
 
         uint64_t strideQ;
         uint64_t strideO;
