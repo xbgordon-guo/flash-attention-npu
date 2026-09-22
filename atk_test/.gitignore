@@ -1,0 +1,6 @@
+# ATK 生成物与过程文件（不入库，可由 ./run.sh gen 重新生成）
+result/
+atk_output/
+SHAPES.md
+__pycache__/
+*.log

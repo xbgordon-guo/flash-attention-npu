@@ -1,0 +1,7 @@
+# ATK 节点配置：NPU 待测 + CPU 标杆（精度对拍）
+nodes:
+  - backend: npu
+    task: ['accuracy']
+    devices: [0]
+  - backend: cpu
+    task: ['accuracy']
