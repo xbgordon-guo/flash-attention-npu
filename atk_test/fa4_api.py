@@ -19,6 +19,7 @@
 #   window_left/window_right             : int（-1 表示无限）
 #   num_splits                           : int
 #   is_varied                            : bool（varlen q/k 序列长度是否随机）
+#   deterministic                        : bool（反向确定性开关，默认 False）
 # nheads/nheads_k/head_dim 由 tensor shape 推导。
 #
 # 输出：out（fp16/bf16），softmax_lse（fp32）。反向用例只返回 out
@@ -114,6 +115,7 @@ class FA4Api(BaseApi):
         wr = _as_int(kw["window_right"])
         num_splits = _as_int(kw["num_splits"])
         is_varied = _as_bool(kw["is_varied"])
+        deterministic = _as_bool(kw.get("deterministic", False))
         is_bwd = bool(getattr(input_data, "require_grad", False))
 
         nheads = int(q.shape[-2])
@@ -129,7 +131,7 @@ class FA4Api(BaseApi):
 
         if self.device == "npu":
             out, lse = self._run_npu(q, k, v, mode, scale, causal, wl, wr, num_splits,
-                                     batch, seqlen_q, seqlen_k, q_seqs, kv_seqs)
+                                     batch, seqlen_q, seqlen_k, q_seqs, kv_seqs, deterministic)
             return out if is_bwd else (out, lse)
 
         out_ref, lse_ref = self._run_golden(q, k, v, mode, scale, causal, wl, wr,
@@ -138,13 +140,14 @@ class FA4Api(BaseApi):
 
     @staticmethod
     def _run_npu(q, k, v, mode, scale, causal, wl, wr, num_splits,
-                 batch, seqlen_q, seqlen_k, q_seqs, kv_seqs):
+                 batch, seqlen_q, seqlen_k, q_seqs, kv_seqs, deterministic=False):
         from flash_attn_npu_4 import flash_attn_func, flash_attn_varlen_func
 
         if mode == 0:
             return flash_attn_func(
                 q, k, v, softmax_scale=scale, causal=causal,
                 window_size=(wl, wr), num_splits=num_splits, return_lse=True,
+                deterministic=deterministic,
             )
         cu_q = torch.tensor(_cum(q_seqs), dtype=torch.int32, device=q.device)
         cu_k = None
@@ -160,6 +163,7 @@ class FA4Api(BaseApi):
             max_seqlen_q=seqlen_q, max_seqlen_k=seqlen_k, seqused_k=seqused_k,
             page_table=page_table, softmax_scale=scale, causal=causal,
             window_size=(wl, wr), num_splits=num_splits, return_lse=True,
+            deterministic=deterministic,
         )
 
     @staticmethod

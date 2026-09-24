@@ -1,0 +1,9 @@
+# ATK 确定性测试节点配置（accuracy_dc 任务 + 确定性 run mode）
+# 用途：对 FA4 做确定性（determinism）测试，仅测试分析，不改算子源码。
+nodes:
+  - backend: npu
+    task: ['accuracy_dc']
+    devices: [0, 1, 2, 3, 4, 5, 6, 7]
+    run_modes: ['ascend_use_deterministic_algorithms']
+  - backend: cpu
+    task: ['accuracy_dc']

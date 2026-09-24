@@ -50,8 +50,10 @@ atk_test/
 ├── fa4_api.py             自定义执行方式（npu 算子 / cpu golden，支持 BSND/TND/paged）
 ├── fa4_full.yaml          前向用例设计（476 条）
 ├── fa4_bwd.yaml           反向用例设计（96 条）
+├── fa4_bwd_det.yaml       反向确定性用例设计（96 条，deterministic=True）
 ├── fa4_generate_full.py   自定义参数约束（import 原测试 shape 表）
 ├── node.yaml              节点配置（npu 待测 + cpu 标杆）
+├── nodes_dc.yaml          确定性测试节点配置（accuracy_dc + 确定性 run mode）
 ├── run.sh                 一键脚本
 ├── result/                atk case 生成物（运行后产生）
 └── atk_output/            ATK 结果与报告（运行后产生）
@@ -69,6 +71,8 @@ cd atk_test
 ./run.sh smoke     # 前向冒烟（前 10 条）
 ./run.sh forward   # 前向全量
 ./run.sh bwd       # 反向全量
+./run.sh dc_fwd    # 前向确定性（accuracy_dc）
+./run.sh dc_bwd    # 反向确定性（accuracy_dc）
 ```
 
 等价手工两步：
@@ -197,3 +201,71 @@ ATK 忠实复现该问题，非测试框架或本端口引入。
 
 ATK 及依赖装入 `/usr/local/python3.12.13`；安装过程曾把 `numpy` 升至 2.5.3
 （破坏 `torch_npu`），已回退至 `numpy==1.26.4`。
+
+---
+
+## 10. 确定性测试（determinism）
+
+用 ATK 原生 `accuracy_dc` 任务：**克隆输入重复执行 N 次并逐位比对**
+（日志 `start run accuracy dc compare in N times`），节点配置见 `nodes_dc.yaml`
+（`task: ['accuracy_dc']` + `run_modes: ['ascend_use_deterministic_algorithms']`）。
+
+```bash
+./run.sh dc_fwd                    # 前向 476 条，dc_loop=50
+./run.sh dc_bwd                    # 反向 96 条，dc_loop=50
+DC_LOOP_NUMS=200 ./run.sh dc_bwd   # 覆盖循环次数
+```
+
+汇总字段 `is_acc_dc_pass`，报告列"确定性计算是否达标"。
+
+### 10.1 结果
+
+| 套件 | 用例数 | 确定性达标 | 结论 |
+|---|---|---|---|
+| 前向 | 476 | 476 (100%) | 确定 |
+| 反向（默认 `deterministic=False`） | 96 | 49 (51.0%) | **47 条非确定** |
+| 反向（`deterministic=True`） | 96 | **96 (100%)** | 确定 |
+
+### 10.2 根因：反向 `deterministic` 开关（默认 false）
+
+```
+flash_attn_varlen_func(..., deterministic: bool = False)          # 默认 False
+  -> flash_api.cpp:            fagInfo.isDeterministic = deterministic
+  -> bwd_dispatch_common.hpp:  BWD_BOOL_SWITCH(deterministic, IsDtm, ...)  # 模板 IS_DTM
+  -> fag_kernel.cpp:           if constexpr (IS_DTM == ENABLE)  两条内核路径
+       默认(False): ComputeMMDqkv -> mmad_fag_dqkv.hpp SetAtomicType<float>()  原子累加 -> 非确定
+       True       : DTMComputeMMDqkv + EpilogueFAGDtmAdd + SyncAll()           确定性归约
+```
+
+`fag_tiling.h` 默认 `isDeterministic = false`。
+
+### 10.3 独立逐位复现（20 轮，同输入）
+
+| 用例 | out | dQ | dK | dV |
+|---|---|---|---|---|
+| D=32 bf16 | 确定 | 确定 | 非确定 (11/19 轮) | 确定 |
+| D=64 fp16 causal | 确定 | 确定 | 非确定 (19/19 轮) | 确定 |
+| Sq=16 Sk=4096 | 确定 | 非确定 | 非确定 | 确定 |
+
+非确定项固定为 `dK`（主）/`dQ`（次）；`out` 与 `dV` 恒确定。失败与
+`num_splits ≥ 1` 强相关（11/12），但 `num_splits = 0` 也有 36/84 失败。
+
+### 10.4 `deterministic=True` 可完全消除（ATK 全量验证）
+
+确定性用例拆分为**独立设计文件** `fa4_bwd_det.yaml`（与 `fa4_bwd.yaml` 同 shape，
+仅多 `deterministic` 入参并置 True），**不影响精度套件**：
+
+| 设计文件 | 用途 | deterministic |
+|---|---|---|
+| `fa4_bwd.yaml` | 精度（算子默认路径） | 无此入参（默认 False） |
+| `fa4_bwd_det.yaml` | 确定性 | True |
+
+```bash
+atk case -f fa4_bwd_det.yaml -p fa4_generate_full.py
+./run.sh dc_bwd        # 96/96 达标
+```
+
+实测：反向 96 条从 49/96 提升到 **96/96**（`is_acc_dc_pass:Pass`）。
+
+> `run_modes: ascend_use_deterministic_algorithms` 对本算子**无效**——算子不读
+> `torch.use_deterministic_algorithms`，只读自身 `deterministic` 入参。

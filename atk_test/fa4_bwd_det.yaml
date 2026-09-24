@@ -1,0 +1,100 @@
+# =============================================================================
+# FA4 反向确定性用例设计文件（deterministic=True）
+# -----------------------------------------------------------------------------
+# 与 fa4_bwd.yaml 完全同 shape（layout=TND、cache_mode=0、num_splits<=1，96 条），
+# 唯一区别是多一个 deterministic 入参并置 True，用于验证确定性反向路径。
+# 精度测试仍走 fa4_bwd.yaml（算子默认路径）。
+#
+# 生成： atk case -f fa4_bwd_det.yaml -p fa4_generate_full.py
+# 执行： atk task -c result/fa4_bwd_det/json/all_fa4_bwd_det.json -n nodes_dc.yaml \
+#                -p fa4_api.py --dc_loop_nums 50
+# =============================================================================
+api: pytorch
+api_type: fa4
+version: v1.0
+name: flash_attn
+dtype_numbers: 96
+extra_numbers: 0
+generate: fa4_bwd_det
+backward: true
+standard:
+  acc: cv_fused_double_benchmark
+  perf: not_key
+inputs:
+  - name: q
+    type: tensor
+    required: true
+    backward: true
+    dtypes:
+      values: [ fp16 ]
+    shapes:
+      dim_numbers:
+        values: [ 3, 4 ]
+  - name: k
+    type: tensor
+    required: true
+    backward: true
+    dtypes:
+      values: [ fp16 ]
+    shapes:
+      dim_numbers:
+        values: [ 3, 4 ]
+  - name: v
+    type: tensor
+    required: true
+    backward: true
+    dtypes:
+      values: [ fp16 ]
+    shapes:
+      dim_numbers:
+        values: [ 3, 4 ]
+  - name: mode
+    type: attr
+    required: true
+    dtypes:
+      values: [ int ]
+  - name: batch
+    type: attr
+    required: true
+    dtypes:
+      values: [ int ]
+  - name: seqlen_q
+    type: attr
+    required: true
+    dtypes:
+      values: [ int ]
+  - name: seqlen_k
+    type: attr
+    required: true
+    dtypes:
+      values: [ int ]
+  - name: causal
+    type: attr
+    required: true
+    dtypes:
+      values: [ bool ]
+  - name: window_left
+    type: attr
+    required: true
+    dtypes:
+      values: [ int ]
+  - name: window_right
+    type: attr
+    required: true
+    dtypes:
+      values: [ int ]
+  - name: num_splits
+    type: attr
+    required: true
+    dtypes:
+      values: [ int ]
+  - name: is_varied
+    type: attr
+    required: true
+    dtypes:
+      values: [ bool ]
+  - name: deterministic
+    type: attr
+    required: true
+    dtypes:
+      values: [ bool ]

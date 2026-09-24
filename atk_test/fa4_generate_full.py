@@ -88,7 +88,7 @@ def _shapes(mode, b, h, hk, sq, sk, d, dv, is_varied):
     return ([total_q, h, d], [nblocks, BLOCK_SIZE, hk, d], [nblocks, BLOCK_SIZE, hk, dv])
 
 
-def _apply(case_config, specs, counter):
+def _apply(case_config, specs, counter, deterministic=None):
     inputs = case_config.inputs
     if inputs and isinstance(inputs[0], list):
         inputs = inputs[0]
@@ -121,6 +121,8 @@ def _apply(case_config, specs, counter):
     inputs[9].range_values = wr
     inputs[10].range_values = ns
     inputs[11].range_values = is_varied
+    if deterministic is not None and len(inputs) >= 13:
+        inputs[12].range_values = deterministic
     return case_config
 
 
@@ -142,3 +144,13 @@ class FA4BwdGenerator(CaseGenerator):
 
     def after_case_config(self, case_config: CaseConfig) -> CaseConfig:
         return _apply(case_config, _BWD_SPECS, self._counter)
+
+
+@GENERATOR_REGISTRY.register("fa4_bwd_det")
+class FA4BwdDetGenerator(CaseGenerator):
+    """反向确定性子集（同 fa4_bwd，deterministic=True）。"""
+
+    _counter = {"n": 0}
+
+    def after_case_config(self, case_config: CaseConfig) -> CaseConfig:
+        return _apply(case_config, _BWD_SPECS, self._counter, deterministic=True)
