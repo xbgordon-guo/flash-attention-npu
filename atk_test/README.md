@@ -54,6 +54,7 @@ atk_test/
 ├── fa4_generate_full.py   自定义参数约束（import 原测试 shape 表）
 ├── node.yaml              节点配置（npu 待测 + cpu 标杆）
 ├── nodes_dc.yaml          确定性测试节点配置（accuracy_dc + 确定性 run mode）
+├── fa4_batch_consistency.py  batch 不变性独立测试脚本（逐位一致）
 ├── run.sh                 一键脚本
 ├── result/                atk case 生成物（运行后产生）
 └── atk_output/            ATK 结果与报告（运行后产生）
@@ -73,6 +74,7 @@ cd atk_test
 ./run.sh bwd       # 反向全量
 ./run.sh dc_fwd    # 前向确定性（accuracy_dc）
 ./run.sh dc_bwd    # 反向确定性（accuracy_dc）
+./run.sh batch     # 前向 batch 不变性（逐位一致）
 ```
 
 等价手工两步：
@@ -269,3 +271,45 @@ atk case -f fa4_bwd_det.yaml -p fa4_generate_full.py
 
 > `run_modes: ascend_use_deterministic_algorithms` 对本算子**无效**——算子不读
 > `torch.use_deterministic_algorithms`，只读自身 `deterministic` 入参。
+
+---
+
+## 11. batch 不变性测试（前向，逐位一致）
+
+`fa4_batch_consistency.py`（独立脚本，纯 NPU 前向，不改算子）：
+
+- **参考** `ref`：样本 s 单独跑（B=1）
+- **对比**：把 s 放进 B=N 的 batch（N∈{2,4,8}）
+  - `dup`：N 份全同 s
+  - `mix`：s 在位置 p∈{0, N−1}，其余为干扰样本
+- **判据**：`torch.equal` 逐位一致
+
+```bash
+./run.sh batch
+python3 fa4_batch_consistency.py --n 2,4,8 --pos 0,-1
+```
+
+### 11.1 结果（476 条前向，9520 次比对）
+
+| 分组 | 用例数 | 逐位一致 | 不一致 |
+|---|---|---|---|
+| mode 0（dense BSND） | 197 | 197 | 0 |
+| mode 1（dense varlen TND） | 96 | 96 | 0 |
+| mode 2（paged KV TND） | 183 | 160 | **23** |
+| **合计** | **476** | **453 (95.2%)** | **23 (4.8%)** |
+
+### 11.2 mode=2 失败的形态
+
+batch 内各份**互相逐位一致**（位置无关、与干扰数据无关），但与 B=1 有
+~2–4 ULP 差异（bf16 4.9e-4 / fp16 6.1e-5），稳定可复现：
+
+→ **paged 前向不满足 batch-size 不变性**（batch 内一致，跨 batch size 不一致）。
+
+### 11.3 根因假设
+
+paged 路径 `mha_fwd_kvcache.cpp`（FAInfer）tiling 含 batch 相关量
+（`numTasks = batch_size * num_heads_k`、`firstBatchTaskNum/totalTaskNum`、
+`flashDecodeFlag`），batch size 改变任务切分 → 归约顺序变 → 位级差异。
+量级远小于精度容差，**不影响精度结论**。
+
+> 4 条 Sk=131072 的大用例默认 N 会 OOM，脚本已自动 `[SKIP]`；可用 `--n 2` 补跑。

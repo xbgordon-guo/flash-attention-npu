@@ -9,6 +9,7 @@
 #   ./run.sh bwd      # 反向全量（96 条）
 #   ./run.sh dc_fwd   # 前向确定性（476 条，accuracy_dc）
 #   ./run.sh dc_bwd   # 反向确定性（96 条，accuracy_dc）
+#   ./run.sh batch    # 前向 batch 不变性（逐位一致）
 #   ./run.sh          # 默认 = smoke
 #
 # 确定性测试可用 DC_LOOP_NUMS 覆盖循环次数（默认 50）。
@@ -32,6 +33,7 @@ BWD_JSON="result/fa4_bwd/json/all_fa4_bwd.json"
 BWD_DET_JSON="result/fa4_bwd_det/json/all_fa4_bwd_det.json"
 NODES_DC="nodes_dc.yaml"
 DC_LOOP="${DC_LOOP_NUMS:-50}"
+BATCH_PY="fa4_batch_consistency.py"
 
 gen() {
     echo "[INFO] 生成前向用例（476）"
@@ -72,6 +74,12 @@ dc_bwd() {
     atk task -c "$BWD_DET_JSON" -n "$NODES_DC" -p "$PLUGIN" --dc_loop_nums "$DC_LOOP"
 }
 
+batch() {
+    [[ -f "$FULL_JSON" ]] || gen
+    echo "[INFO] 前向 batch 不变性（逐位一致, N=2,4,8, pos=0,-1）"
+    "${PY_BIN}/python3" "$BATCH_PY" --n 2,4,8 --pos 0,-1
+}
+
 case "${1:-smoke}" in
     gen)     gen ;;
     smoke)   smoke ;;
@@ -79,5 +87,6 @@ case "${1:-smoke}" in
     bwd)     bwd ;;
     dc_fwd)  dc_fwd ;;
     dc_bwd)  dc_bwd ;;
-    *) echo "Usage: $0 [gen|smoke|forward|bwd|dc_fwd|dc_bwd]"; exit 1 ;;
+    batch)   batch ;;
+    *) echo "Usage: $0 [gen|smoke|forward|bwd|dc_fwd|dc_bwd|batch]"; exit 1 ;;
 esac
