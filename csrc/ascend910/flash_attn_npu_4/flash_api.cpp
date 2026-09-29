@@ -225,6 +225,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
     TORCH_CHECK(!min_seqlen_k_.has_value(), "NPU FlashAttention does not support min_seqlen_k");
     TORCH_CHECK(!gather_kv_indices_.has_value(), "NPU FlashAttention does not support gather_kv_indices");
     TORCH_CHECK(!learnable_sink_.has_value(), "NPU FlashAttention does not support learnable_sink");
+    TORCH_CHECK(!q_v_.has_value(), "NPU FlashAttention does not support q_v");
 
     if (is_varlen_kv) {
         cu_seqlens_k = cu_seqlens_k_.value();
