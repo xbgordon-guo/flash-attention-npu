@@ -140,8 +140,9 @@ def _flash_attn_forward(
     scheduler_metadata: Optional[torch.Tensor] = None,
     sm_margin: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    q, k = [maybe_contiguous(x) for x in (q, k)]
-    v = v.contiguous() if v.stride(-1) != 1 and v.stride(-3) != 1 else v
+    # v 可能是 (T,H,Dv) 的非连续切片: stride(-1)==1 但行 stride 更宽, 只查最后一个
+    # stride 会漏判, 内核按连续内存寻址就会读到错位数据
+    q, k, v = [x if x.is_contiguous() else x.contiguous() for x in (q, k, v)]
     cu_seqlens_q, cu_seqlens_k = [
         maybe_contiguous(x) for x in (cu_seqlens_q, cu_seqlens_k)
     ]
